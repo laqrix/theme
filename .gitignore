@@ -4,5 +4,7 @@
 *.ss.html
 *.wpo
 *~
+/palettes/rgb.txt
+/palettes/themes
 theme
 theme.boot

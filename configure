@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+CONFIG_FILE="$HOME/.config/theme/config.ss"
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo "Config file already exists. $CONFIG_FILE"
+  echo "Move or delete it to reconfigure."
+  exit 1
+fi
+
+# Locate the emacs binary via PATH
+EMACS_BIN=$(which emacs)
+if [[ -z "$EMACS_BIN" ]]; then
+  echo "Emacs not found in PATH. Make sure it is installed via Homebrew."
+  exit 1
+fi
+
+# Resolve the real path to the emacs binary (absolute path)
+EMACS_REAL=$(cd "$(dirname "$EMACS_BIN")" && readlink "$EMACS_BIN")
+if [[ ! "$EMACS_REAL" = /* ]]; then
+  # If the resolved path is relative, prepend the directory it was in
+  EMACS_REAL="$(cd "$(dirname "$EMACS_BIN")" && cd "$(dirname "$EMACS_REAL")" && pwd)/$(basename "$EMACS_REAL")"
+fi
+
+EMACS_VERSION=$(emacs --version | head -n1 | awk '{print $3}')
+
+# Get the Emacs base directory (2 levels up from binary)
+EMACS_DIR="$(cd "$(dirname "$EMACS_REAL")/../../$EMACS_VERSION" && pwd)"
+
+EMACS_RGB="$EMACS_DIR/share/emacs/$EMACS_VERSION/etc/rgb.txt"
+if [[ ! -f "$EMACS_RGB" ]]; then
+  echo "File not found: $EMACS_RGB"
+else
+  echo "Found file: $EMACS_RGB"
+  ln -sf "$EMACS_RGB" palettes/rgb.txt  
+fi
+
+# Not sure why Doom themes may occur in multiple directories
+DOOM_THEMES=""
+for dir in \
+  "$HOME/.emacs.d/straight/repos/themes/themes" \
+  "$HOME/.emacs.d/straight/repos/emacs-doom-themes/themes"
+do
+  if [[ -d "$dir" ]]; then
+    DOOM_THEMES="$dir"
+    break
+  fi
+done
+
+if [[ -z "$DOOM_THEMES" ]]; then
+  echo "Could not locate Doom Themes."
+else
+  echo "Found Doom Themes: $DOOM_THEMES"
+  ln -sf "$DOOM_THEMES" palettes
+fi
+
+./make-config.ss > "$CONFIG_FILE"
+echo "Rebuilt $CONFIG_FILE"
