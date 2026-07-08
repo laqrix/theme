@@ -18,11 +18,15 @@
 
 (define opt (parse-command-line-arguments cli))
 
-(when (or (opt 'help) (zero? (hashtable-size (opt))))
+(define completions? (getenv "THEME_COMPLETION"))
+
+(when (and (or (opt 'help) (zero? (hashtable-size (opt))))
+           (not completions?))
   (display-help (app:name) cli (opt))
   (exit 0))
 
-(when (getenv "INSIDE_EMACS")
+(when (and (getenv "INSIDE_EMACS")
+           (not completions?))
   (exit 0))
 
 (define verbose? (and (opt 'verbose)))
@@ -274,6 +278,61 @@
      (try (db:stop 'db))
      (apply eh args))))
 (setup-db)
+
+(when completions?
+  (let ()
+    (define op
+      (open-output-string)
+      #;(open-file-to-append "/tmp/debug-info"))
+    (define (trace-getenv var)
+      (let ([val (getenv var)])
+        (fprintf op "~a = ~a\n" var val)
+        (flush-output-port op)
+        val))
+    (define (shell-escape s)
+      (let ([op (open-output-string)] [len (string-length s)])
+        (do ([i 0 (fx+ i 1)]) ((fx= i len))
+          (let ([c (string-ref s i)])
+            (when (memv c '(#\\ #\space #\tab #\newline
+                            #\$ #\` #\" #\'
+                            #\< #\> #\| #\& #\;
+                            #\( #\) #\[ #\] #\{ #\}
+                            #\* #\? #\! #\# #\~ #\= #\:))
+              (write-char #\\ op))
+            (write-char c op)))
+        (get-output-string op)))
+    (let ([word (trace-getenv "COMP_WORD")])
+      (cond
+       [(not word) (void)]
+       [(starts-with? word "-")
+        (printf "~{~a\n~}"
+          (map shell-escape
+            (fold-right
+             (lambda (spec acc)
+               (<arg-spec> open spec [short long])
+               (let* ([short (and short (format "-~a" short))]
+                      [acc (if (and short (starts-with? short word))
+                               (cons short acc)
+                               acc)]
+                      [long (and long (format "--~a" long))]
+                      [acc (if (and long (starts-with? long word))
+                               (cons long acc)
+                               acc)])
+                 acc))
+             '()
+             cli)))]
+       [else
+        (printf "~{~a\n~}"
+          (map shell-escape
+            (map scalar
+              (transaction 'db
+                (execute
+                 (ct:join #\space
+                   "select name from themes where name like ?1"
+                   "union"
+                   "select name from colors where name like ?1")
+                 (format "~a%" word))))))])))
+  (exit 0))
 
 (when (opt 'query)
   (pretty-print
