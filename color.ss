@@ -3,6 +3,8 @@
   (export
    ->color
    <color>
+   color->csv
+   color->hex
    hsl
    hsl->rgb
    hsv
@@ -107,6 +109,10 @@
         (and n (string->color n)))]
      [else #f]))
 
+  (define (color->csv c)
+    (<color> open c [r g b])
+    (format "~a,~a,~a" r g b))
+
   (define (csv->color x)
     (and (do ([i 0 (+ i 1)]
               [comma? #f (or comma? (char=? (string-ref x i) #\,))])
@@ -119,6 +125,21 @@
               (and r g b (rgb r g b)))]
            [,_ #f])))
 
+  (define (color->hex c)
+    (<color> open c [r g b])
+    (format "~2,'0x~2,'0x~2,'0x" r g b))
+
+  (define (hex->color str)
+    (cond
+     [(and (= (string-length str) 6)
+           (string->number str 16)) =>
+      (lambda (c24)
+        (rgb
+         (#3%logand #xFF (#3%fxarithmetic-shift-right c24 16))
+         (#3%logand #xFF (#3%fxarithmetic-shift-right c24 8))
+         (#3%logand #xFF c24)))]
+     [else #f]))
+
   (define (scalar x)
     (match x
       [() #f]
@@ -130,13 +151,7 @@
      [(and (char=? (string-ref str 0) #\{)
            (json->color (json:string->object str)))]
      [(csv->color str)]
-     [(and (= (string-length str) 6)
-           (string->number str 16)) =>
-      (lambda (c24)
-        (rgb
-         (#3%logand #xFF (#3%fxarithmetic-shift-right c24 16))
-         (#3%logand #xFF (#3%fxarithmetic-shift-right c24 8))
-         (#3%logand #xFF c24)))]
+     [(hex->color str)]
      [(let* ([db-pid (whereis 'db)]
              [x (and db-pid
                      (scalar
