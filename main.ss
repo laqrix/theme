@@ -213,6 +213,23 @@
     r g b
     #\bel))
 
+(define (with-preview bg fg thunk)
+  (define (reset)
+    (printf "~c[0m" #\esc))
+  (define (preview type color)
+    (<color> open color [r g b])
+    (printf "~c[~d;~d;~d;~d;~dm"
+      #\esc
+      (match type
+        [fg 38]
+        [bg 48])
+      2 r g b))
+  (reset)
+  (when bg (preview 'bg bg))
+  (when fg (preview 'fg fg))
+  (thunk)
+  (reset))
+
 (define set-theme*
   (case-lambda
    [(bg fg) (set-theme* bg fg #t)]
@@ -262,12 +279,24 @@
       (printf "~a: ~s not recognized.\n" (app:name) ref)
       (printf "Use a comma separated color triple, a hexadecimal color triple, or one of:\n")
       (for-each
-       (lambda (n)
-         (printf "  ~a\n" n))
-       (sort string-ci<?
-         (map scalar
-           (transaction 'db
-             (execute "select name from themes order by name")))))
+       (lambda (row)
+         (match row
+           [#(,name ,details)
+            (let* ([details
+                    (if (bytevector? details)
+                        (json:bytevector->object details)
+                        (json:string->object details))]
+                   [bg (json:ref details 'bg #f)]
+                   [bg (and bg (->color bg))]
+                   [fg (json:ref details 'fg #f)]
+                   [fg (and fg (->color fg))])
+              (printf "  ")
+              (with-preview bg fg
+                (lambda ()
+                  (printf "~a" name)))
+              (newline))]))
+       (transaction 'db
+         (execute "select name,details from themes order by name")))
       (exit 2)])]
    [(ref1 ref2)
     (let ([bg (->color ref1)]
@@ -358,29 +387,17 @@
 (cond
  [(opt 'lscolors) =>
   (lambda (query)
-    (define (colorize type r g b)
-      (printf "~c[~d;~d;~d;~d;~dm"
-        #\esc
-        (match type
-          [fg 38]
-          [bg 48])
-        2 r g b))
     (for-each
      (lambda (row)
        (match row
          [#(,name ,details)
-          (let ([x (json:bytevector->object details)])
-            (let ([r (json:ref x 'r #f)]
-                  [g (json:ref x 'g #f)]
-                  [b (json:ref x 'b #f)])
-              (printf "~c[0m" #\esc)
-              (colorize 'bg r g b)
-              (printf "     ")
-              (printf "~c[0m" #\esc)
-              (colorize 'fg r g b)
-              (printf " ~3@a,~3@a,~3@a : ~a" r g b name)
-              (newline)
-              (printf "~c[0m" #\esc)))]))
+          (let ([color (->color details)])
+            (<color> open color [r g b])
+            (with-preview color #f
+              (lambda () (printf "     ")))
+            (with-preview #f color
+              (lambda () (printf " ~3@a,~3@a,~3@a : ~a" r g b name)))
+            (newline))]))
      (match query
        ["default"
         (append
