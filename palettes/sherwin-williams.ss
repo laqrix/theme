@@ -1463,7 +1463,7 @@
 ("Cottage Cream" "237,219,190")
 ("Golden Gate" "218,176,133")
 ("Lanyard" "191,153,116")
-("Tea gLight" "247,227,195")
+("Tea Light" "247,227,195")
 ("Bee's Wax" "234,192,137")
 ("Buff" "243,225,197")
 ("Concord Buff" "239,216,182")
