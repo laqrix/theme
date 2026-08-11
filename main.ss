@@ -9,7 +9,6 @@
    [reset --reset bool "reapply the current theme"]
    [restore --restore (list . "<THEME_ID>") "restore the theme associated with THEME_ID"
      (conflicts '(reset))]
-   [intensity |-i| (string "<value>") "update the current intensity by <value>; [-255, 255]"]
    [verbose -v bool "enable verbose output"]
    [query -q bool "show current session history"]
    [rest (list . "<ref>") "A single <ref> is treated as as background color or a theme name. A second <ref> is treated as a foreground color."]
@@ -62,6 +61,11 @@
     [() #f]
     [#(,v) v]
     [(#(,v)) v]))
+
+(define (one x)
+  (match x
+    [() #f]
+    [(,row) row]))
 
 (define (try-import fn)
   (when (file-exists? fn)
@@ -143,6 +147,19 @@
         [,_ (void)])
       'ok)]))
 
+(define (details->json details)
+  (if (bytevector? details)
+      (json:bytevector->object details)
+      (json:string->object details)))
+
+(define (details->colors details)
+  (let* ([details (details->json details)]
+         [bg (json:ref details 'bg #f)]
+         [bg (and bg (->color bg))]
+         [fg (json:ref details 'fg #f)]
+         [fg (and fg (->color fg))])
+    (values bg fg)))
+
 (define (restore-theme id)
   (LOG "session ~a, id ~s\n" session-id id)
   (match
@@ -163,25 +180,20 @@
     (LOG "no theme found\n")
     (set-theme "default")]
    [,details
-    (let* ([details
-            (if (bytevector? details)
-                (json:bytevector->object details)
-                (json:string->object details))]
-           [bg (json:ref details 'bg #f)]
-           [bg (and bg (->color bg))]
-           [fg (json:ref details 'fg #f)]
-           [fg (and fg (->color fg))])
-      (set-theme* bg fg #f))]))
+    (let-values ([(bg fg) (details->colors details)])
+      (set-theme* bg fg #f #f))]))
 
 (define (set-time-theme ts)
-  (let ([h (modulo ts 360)])
-    (set-theme* (hsv h 1 0.3) #f)))
+  (let* ([h (modulo ts 360)]
+         [bg (hsv h 1 0.3)])
+    (set-theme* bg `#(auto ,(choose-fg bg)))))
 
 (define (set-keyed-theme key)
-  (let ([h (do ([i 0 (+ i 1)]
-                [h 0 (+ h (char->integer (string-ref key i)))])
-               ((= i (string-length key)) (modulo h 360)))])
-    (set-theme* (hsv h 1 0.3) #f)))
+  (let* ([h (do ([i 0 (+ i 1)]
+                 [h 0 (+ h (char->integer (string-ref key i)))])
+                ((= i (string-length key)) (modulo h 360)))]
+         [bg (hsv h 1 0.3)])
+    (set-theme* bg `#(auto ,(choose-fg bg)))))
 
 (define (find-themerc dir)
   (let ([fn (path-combine dir ".themerc")])
@@ -213,6 +225,22 @@
     r g b
     #\bel))
 
+(define (choose-fg bg)
+  (<color> open bg [r g b])
+  (match (or (getenv "THEME_FG") "threshold")
+    ["threshold"
+     (let-values ([(h s v) (rgb->hsv r g b)])
+       ;; Some sources say that using a near 127 value is good, while
+       ;; another points to using perceived brightness which leads to a
+       ;; threshold of 180.
+       (if (<= v 180)
+           (rgb 255 255 255)
+           (rgb 30 30 30)))]
+    ["complementary"
+     (rgb (- 255 r) (- 255 g) (- 255 b))]
+    [,unhandled
+     (errorf #f "Unknown THEME_FG value ~s" unhandled)]))
+
 (define (with-preview bg fg thunk)
   (define (reset)
     (printf "~c[0m" #\esc))
@@ -232,16 +260,24 @@
 
 (define set-theme*
   (case-lambda
-   [(bg fg) (set-theme* bg fg #t)]
-   [(bg fg log?)
+   [(bg fg) (set-theme* bg fg #f #t)]
+   [(bg fg log?) (set-theme* bg fg #f log?)]
+   [(bg fg name log?)
     (let ([details (json:make-object)])
       (when bg
         (set-rgb-color 'bg bg)
         (json:extend-object details [bg (color->hex bg)]))
-      (when fg
-        (set-rgb-color 'fg fg)
-        (json:extend-object details [fg (color->hex fg)]))
+      (match fg
+        [#f (void)]
+        [`(<color>)
+         (set-rgb-color 'fg fg)
+         (json:extend-object details [fg (color->hex fg)])]
+        [#(auto ,fg)
+         (set-rgb-color 'fg fg)
+         (json:extend-object details [fg (color->hex fg)] [fg-auto? #t])])
       (when log?
+        (when name
+          (json:extend-object details [name name]))
         (db:log 'db "insert into sessions (timestamp,id,details) values (?,?,?)"
           (erlang:now)
           session-id
@@ -259,22 +295,37 @@
          [(find-themerc dir) => set-file-theme]
          [(opt 'now) (set-time-theme (erlang:now))]
          [else (set-keyed-theme dir)]))]
-     [(scalar
+     [(one
        (transaction 'db
-         (execute "select details from themes where name=? limit 1" ref))) =>
-      (lambda (details)
-        (let* ([details
-                (if (bytevector? details)
-                    (json:bytevector->object details)
-                    (json:string->object details))]
-               [bg (json:ref details 'bg #f)]
-               [bg (and bg (->color bg))]
-               [fg (json:ref details 'fg #f)]
-               [fg (and fg (->color fg))])
-          (set-theme* bg fg)))]
+         (execute "select name,details from themes where name=? limit 1" ref))) =>
+      (lambda (row)
+        (match row
+          [#(,name ,details)
+           (let-values ([(bg fg) (details->colors details)])
+             (set-theme* bg fg name #t))]))]
      [(->color ref) =>
       (lambda (color)
-        (set-theme* color #f))]
+        (set-theme* color `#(auto ,(choose-fg color))))]
+     [(and (> (string-length ref) 0)
+           (memv (string-ref ref 0) '(#\+ #\- #\0))
+           (string->number ref)) =>
+      (lambda (delta)
+        (cond
+         [(zero? delta) (void)]
+         [(scalar
+           (transaction 'db
+             (execute "select details from sessions where id=? order by timestamp desc limit 1"
+               session-id))) =>
+          (lambda (details)
+            (let-values ([(bg fg) (details->colors details)])
+              (when bg
+                (match-let* ([`(<color> ,r ,g ,b) bg])
+                  (let-values ([(h s v) (rgb->hsv r g b)])
+                    (let ([new-bg (hsv h s (/ (+ v delta) 255))])
+                      (set-theme* new-bg
+                        (if (json:ref (details->json details) 'fg-auto? #f)
+                            `#(auto ,(choose-fg new-bg))
+                            fg))))))))]))]
      [else
       (printf "~a: ~s not recognized.\n" (app:name) ref)
       (printf "Use a comma separated color triple, a hexadecimal color triple, or one of:\n")
@@ -282,21 +333,29 @@
        (lambda (row)
          (match row
            [#(,name ,details)
-            (let* ([details
-                    (if (bytevector? details)
-                        (json:bytevector->object details)
-                        (json:string->object details))]
-                   [bg (json:ref details 'bg #f)]
-                   [bg (and bg (->color bg))]
-                   [fg (json:ref details 'fg #f)]
-                   [fg (and fg (->color fg))])
-              (printf "  ")
+            (let-values ([(bg fg) (details->colors details)])
               (with-preview bg fg
-                (lambda ()
-                  (printf "~a" name)))
+                (lambda () (printf " xyz ")))
+              (with-preview bg fg
+                (lambda () (printf " ~a" name)))
               (newline))]))
-       (transaction 'db
-         (execute "select name,details from themes order by name")))
+       (let ([query (format "%~a%" ref)])
+         (transaction 'db
+           (execute "select name,details from themes where name like ? order by name" query))))
+      (for-each
+       (lambda (row)
+         (match row
+           [#(,name ,details)
+            (let ([color (->color details)])
+              (<color> open color [r g b])
+              (with-preview color (choose-fg color)
+                (lambda () (printf " xyz ")))
+              (with-preview #f color
+                (lambda () (printf " ~3@a,~3@a,~3@a : ~a" r g b name)))
+              (newline))]))
+       (let ([query (format "%~a%" ref)])
+         (transaction 'db
+           (execute "select name,details from colors where name like ? order by name" query))))
       (exit 2)])]
    [(ref1 ref2)
     (let ([bg (->color ref1)]
@@ -374,12 +433,12 @@
    (lambda (row)
      (match row
        [#(,details)
-        (let ([details
-               (if (bytevector? details)
-                   (json:bytevector->object details)
-                   (json:string->object details))])
-          (json:write (current-output-port) details)
-          (newline))]))
+        (let-values ([(bg fg) (details->colors details)])
+          (let ([details (details->json details)])
+            (with-preview bg fg
+              (lambda ()
+                (json:write (current-output-port) details)))
+            (newline)))]))
    (transaction 'db
      (execute "select details from sessions where id=? order by timestamp" session-id)))
   (exit 0))
@@ -439,36 +498,6 @@
 
 (cond
  [(opt 'key) => set-keyed-theme])
-
-(cond
- [(let ([i (opt 'intensity)])
-    (and i (string->number i))) =>
-  (lambda (i)
-    (cond
-     [(scalar
-       (transaction 'db
-         (execute
-          (ct:join #\space
-            "select details"
-            "from sessions"
-            "where id=?"
-            "order by timestamp desc"
-            "limit 1")
-          session-id))) =>
-      (lambda (details)
-        (let* ([details
-                (if (bytevector? details)
-                    (json:bytevector->object details)
-                    (json:string->object details))]
-               [bg (json:ref details 'bg #f)]
-               [bg (and bg (->color bg))]
-               [fg (json:ref details 'fg #f)]
-               [fg (and fg (->color fg))])
-          (when bg
-            (match-let* ([`(<color> ,r ,g ,b) bg])
-              (let-values ([(h s v) (rgb->hsv r g b)])
-                (let ([new-bg (hsv h s (/ (+ v i) 255))])
-                  (set-theme* new-bg fg)))))))]))])
 
 (match (opt 'rest)
   [#f (exit 0)]
