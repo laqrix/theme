@@ -113,25 +113,37 @@
     (<color> open c [r g b])
     (format "~a,~a,~a" r g b))
 
+  (define (csv-byte s)
+    (let ([n (string-length s)])
+      (and (<= 1 n 3)
+           (for-all decimal-digit? (string->list s))
+           (let ([x (string->number s)])
+             (and (<= x 255) x)))))
+
   (define (csv->color x)
-    (and (do ([i 0 (+ i 1)]
-              [comma? #f (or comma? (char=? (string-ref x i) #\,))])
-             ((= i (string-length x)) comma?))
-         (match (split x #\,)
-           [(,r ,g ,b)
-            (let ([r (string->number r)]
-                  [g (string->number g)]
-                  [b (string->number b)])
-              (and r g b (rgb r g b)))]
-           [,_ #f])))
+    (match (split x #\,)
+      [(,r ,g ,b)
+       (let ([r (csv-byte r)]
+             [g (csv-byte g)]
+             [b (csv-byte b)])
+         (and r g b (rgb r g b)))]
+      [,_ #f]))
 
   (define (color->hex c)
     (<color> open c [r g b])
     (format "~2,'0x~2,'0x~2,'0x" r g b))
 
+  (define (decimal-digit? c)
+    (char<=? #\0 c #\9))
+
+  (define (hex-digit? c)
+    (or (decimal-digit? c)
+        (char<=? #\a (char-downcase c) #\f)))
+
   (define (hex->color str)
     (cond
      [(and (= (string-length str) 6)
+           (for-all hex-digit? (string->list str))
            (string->number str 16)) =>
       (lambda (c24)
         (rgb
@@ -148,6 +160,7 @@
 
   (define (string->color str)
     (cond
+     [(string=? str "") #f]
      [(and (char=? (string-ref str 0) #\{)
            (json->color (json:string->object str)))]
      [(csv->color str)]
